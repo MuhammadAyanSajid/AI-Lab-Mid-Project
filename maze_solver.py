@@ -246,6 +246,132 @@ class MazeSolver:
             "time": elapsed_time,
         }
 
+    # Generator-based (step-by-step) versions for slow-motion visualization
+    def run_bfs_steps(self):
+        """Breadth-First Search yielding (current_state, visited_nodes) after each step."""
+        frontier = deque([self.initial_state])
+        parents = {self.initial_state: None}
+        visited = {self.initial_state}
+
+        while frontier:
+            current_state = frontier.popleft()
+            yield ("step", current_state, visited.copy())
+
+            if current_state == self.goal_state:
+                path = self.reconstruct_path(parents, current_state)
+                yield ("found", path, len(visited))
+                return
+
+            for next_state in self.neighbors(current_state):
+                if next_state not in visited:
+                    visited.add(next_state)
+                    parents[next_state] = current_state
+                    frontier.append(next_state)
+
+        yield ("not_found", [], len(visited))
+
+    def run_dfs_steps(self):
+        """Depth-First Search yielding (current_state, visited_nodes) after each step."""
+        stack = [self.initial_state]
+        parents = {self.initial_state: None}
+        visited = set()
+
+        while stack:
+            current_state = stack.pop()
+
+            if current_state in visited:
+                continue
+
+            visited.add(current_state)
+            yield ("step", current_state, visited.copy())
+
+            if current_state == self.goal_state:
+                path = self.reconstruct_path(parents, current_state)
+                yield ("found", path, len(visited))
+                return
+
+            for next_state in reversed(self.neighbors(current_state)):
+                if next_state not in visited and next_state not in stack:
+                    parents[next_state] = current_state
+                    stack.append(next_state)
+
+        yield ("not_found", [], len(visited))
+
+    def run_ids_steps(self):
+        """Iterative Deepening Search with step-by-step yields."""
+        total_visited = set()
+        parents = {self.initial_state: None}
+
+        for limit in range(self.rows * self.cols):
+            stack = [(self.initial_state, 0)]
+            visited_this_pass = set()
+
+            while stack:
+                current_state, depth = stack.pop()
+
+                if current_state in visited_this_pass:
+                    continue
+
+                visited_this_pass.add(current_state)
+                total_visited.add(current_state)
+                yield ("step", current_state, total_visited.copy())
+
+                if current_state == self.goal_state:
+                    path = self.reconstruct_path(parents, current_state)
+                    yield ("found", path, len(total_visited))
+                    return
+
+                if depth < limit:
+                    for next_state in reversed(self.neighbors(current_state)):
+                        if next_state not in visited_this_pass:
+                            if next_state not in parents:
+                                parents[next_state] = current_state
+                            stack.append((next_state, depth + 1))
+
+        yield ("not_found", [], len(total_visited))
+
+    def run_a_star_steps(self):
+        """A* Search yielding (current_state, visited_nodes) after each step."""
+        frontier = []
+        heapq.heappush(
+            frontier,
+            (self.manhattan_distance(self.initial_state), 0, self.initial_state),
+        )
+        parents = {self.initial_state: None}
+        best_cost = {self.initial_state: 0}
+        closed_set = set()
+
+        while frontier:
+            f_cost, g_cost, current_state = heapq.heappop(frontier)
+
+            if current_state in closed_set:
+                continue
+
+            closed_set.add(current_state)
+            yield ("step", current_state, closed_set.copy())
+
+            if current_state == self.goal_state:
+                path = self.reconstruct_path(parents, current_state)
+                yield ("found", path, len(closed_set))
+                return
+
+            for next_state in self.neighbors(current_state):
+                tentative_g_cost = g_cost + 1
+                if (
+                    next_state not in best_cost
+                    or tentative_g_cost < best_cost[next_state]
+                ):
+                    best_cost[next_state] = tentative_g_cost
+                    parents[next_state] = current_state
+                    tentative_f_cost = tentative_g_cost + self.manhattan_distance(
+                        next_state
+                    )
+                    heapq.heappush(
+                        frontier, (tentative_f_cost, tentative_g_cost, next_state)
+                    )
+
+        yield ("not_found", [], len(closed_set))
+
     def run_all_algorithms(self):
         """Execute all four search strategies on the same maze."""
         results = self.get_all_results()

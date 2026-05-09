@@ -1,5 +1,6 @@
 import threading
 from queue import Empty, Queue
+import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
@@ -27,6 +28,10 @@ class MazeSolverGUI:
         self._suppress_spinbox_callback = False
         self.interactions_enabled = True
         self._running_snapshot = None
+        # Slow-motion visualization: delay (ms) per node explored (0 = instant)
+        self.step_delay_ms = 100
+        self.animation_running = False
+        self.animation_queue = Queue()
 
         self.algorithm_colors = {
             "BFS": "#2563eb",
@@ -196,6 +201,23 @@ class MazeSolverGUI:
             state="readonly",
         )
         self.algorithm_combo.pack(fill=tk.X)
+
+        # Speed control for slow-motion visualization
+        speed_row = ttk.Frame(algorithm_frame)
+        speed_row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(speed_row, text="Speed (ms)").pack(side=tk.LEFT)
+        self.speed_var = tk.StringVar(value="100")
+        self.speed_spinbox = tk.Spinbox(
+            speed_row,
+            from_=0,
+            to=1000,
+            width=6,
+            textvariable=self.speed_var,
+        )
+        self.speed_spinbox.pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(speed_row, text="(0=instant)", font=("Segoe UI", 8)).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
 
         self.run_button = ttk.Button(
             algorithm_frame, text="Run Selected Search", command=self.start_search
@@ -577,6 +599,7 @@ class MazeSolverGUI:
             self.start_col_spinbox,
             self.goal_row_spinbox,
             self.goal_col_spinbox,
+            self.speed_spinbox,
         ):
             widget.configure(state=state)
 
@@ -612,6 +635,11 @@ class MazeSolverGUI:
         try:
             maze_snapshot, start_state, goal_state = self._build_snapshot()
             selection = self._selected_algorithm()
+            # Read speed setting (in milliseconds)
+            try:
+                step_delay = int(self.speed_var.get())
+            except (ValueError, TypeError):
+                step_delay = 100
         except ValueError as exc:
             messagebox.showerror("Invalid Maze", str(exc))
             return
@@ -622,6 +650,7 @@ class MazeSolverGUI:
         self._running_snapshot = (maze_snapshot, start_state, goal_state)
 
         self.running = True
+        self.animation_running = step_delay > 0  # Slow-motion if delay > 0
         self.status_var.set("Running search...")
         self._set_controls_enabled(False)
         self.tree.delete(*self.tree.get_children())
@@ -630,25 +659,105 @@ class MazeSolverGUI:
 
         worker = threading.Thread(
             target=self._run_solver_worker,
-            args=(maze_snapshot, start_state, goal_state, selection),
+            args=(maze_snapshot, start_state, goal_state, selection, step_delay),
             daemon=True,
         )
         worker.start()
         self.root.after(80, self.check_result_queue)
 
-    def _run_solver_worker(self, maze_snapshot, start_state, goal_state, selection):
+    def _run_solver_worker(
+        self, maze_snapshot, start_state, goal_state, selection, step_delay=0
+    ):
         try:
             solver = MazeSolver(maze_snapshot, start_state, goal_state)
-            if selection == "All Algorithms":
-                results = solver.get_all_results()
-            else:
+
+            # Slow-motion mode: use step-by-step generators
+            if step_delay > 0 and selection != "All Algorithms":
                 method_name = self.algorithm_methods[selection]
-                results = [getattr(solver, method_name)()]
-            self.result_queue.put(("success", results))
+                step_method_name = method_name.replace("run_", "run_") + "_steps"
+
+                # Call generator method (e.g., run_bfs_steps)
+                if hasattr(solver, step_method_name):
+                    step_generator = getattr(solver, step_method_name)()
+                    start_time = time.time()
+                    result_data = {
+                        "algorithm": selection,
+                        "path": [],
+                        "path_cost": 0,
+                        "nodes_explored": 0,
+                        "time": 0,
+                        "visited_nodes": set(),
+                    }
+
+                    for step_output in step_generator:
+                        if not self.running:  # User cancelled
+                            return
+
+                        if step_output[0] == "step":
+                            # Intermediate step: (type, current_state, visited_set)
+                            current_state, visited_nodes = (
+                                step_output[1],
+                                step_output[2],
+                            )
+                            result_data["visited_nodes"] = visited_nodes
+                            result_data["nodes_explored"] = len(visited_nodes)
+                            self.animation_queue.put(("step", result_data.copy()))
+                            time.sleep(step_delay / 1000.0)  # Convert ms to seconds
+                        elif step_output[0] == "found":
+                            # Final result: (type, path, nodes_explored)
+                            path, nodes_explored = step_output[1], step_output[2]
+                            elapsed_time = time.time() - start_time
+                            result_data["path"] = path
+                            result_data["path_cost"] = len(path) - 1 if path else 0
+                            result_data["nodes_explored"] = nodes_explored
+                            result_data["time"] = elapsed_time
+                            self.result_queue.put(("success", [result_data]))
+                            return
+                        elif step_output[0] == "not_found":
+                            elapsed_time = time.time() - start_time
+                            result_data["path"] = []
+                            result_data["path_cost"] = 0
+                            result_data["nodes_explored"] = step_output[2]
+                            result_data["time"] = elapsed_time
+                            self.result_queue.put(("success", [result_data]))
+                            return
+                else:
+                    # Fallback: use regular method if step method doesn't exist
+                    if selection == "All Algorithms":
+                        results = solver.get_all_results()
+                    else:
+                        method_name = self.algorithm_methods[selection]
+                        results = [getattr(solver, method_name)()]
+                    self.result_queue.put(("success", results))
+            else:
+                # Normal mode: instant execution
+                if selection == "All Algorithms":
+                    results = solver.get_all_results()
+                else:
+                    method_name = self.algorithm_methods[selection]
+                    results = [getattr(solver, method_name)()]
+                self.result_queue.put(("success", results))
         except Exception as exc:  # pragma: no cover - UI safety net
             self.result_queue.put(("error", str(exc)))
 
     def check_result_queue(self):
+        # First, check for animation steps (real-time rendering during slow-motion)
+        if self.animation_running:
+            try:
+                step_status, step_data = self.animation_queue.get_nowait()
+                if step_status == "step":
+                    # Draw explored nodes in real-time
+                    visited_nodes = step_data.get("visited_nodes", set())
+                    algorithm = step_data.get("algorithm", "BFS")
+                    self._draw_explored_nodes(visited_nodes, algorithm)
+                    # Keep checking for more steps
+                    if self.running:
+                        self.root.after(10, self.check_result_queue)
+                    return
+            except Empty:
+                pass
+
+        # Check for final results
         try:
             status, payload = self.result_queue.get_nowait()
         except Empty:
@@ -657,6 +766,7 @@ class MazeSolverGUI:
             return
 
         self.running = False
+        self.animation_running = False
         self._set_controls_enabled(True)
 
         if status == "error":
@@ -747,6 +857,64 @@ class MazeSolverGUI:
                 capstyle=tk.ROUND,
                 joinstyle=tk.ROUND,
             )
+
+    def _draw_explored_nodes(self, visited_nodes, algorithm):
+        """Draw explored nodes with a light shade of the algorithm's color."""
+        if not visited_nodes or not self.maze:
+            return
+
+        # Redraw maze base
+        self.canvas.delete("all")
+        self._update_canvas_size()
+
+        # Draw maze cells
+        for row_index, row in enumerate(self.maze):
+            for col_index, cell in enumerate(row):
+                x1 = col_index * self.cell_size
+                y1 = row_index * self.cell_size
+                x2 = x1 + self.cell_size
+                y2 = y1 + self.cell_size
+                fill_color = "#ffffff" if cell == 0 else "#111827"
+                self.canvas.create_rectangle(
+                    x1, y1, x2, y2, fill=fill_color, outline="#cbd5e1"
+                )
+
+        # Draw explored nodes in light shade
+        algorithm_color = self.algorithm_colors.get(algorithm, "#0f172a")
+        light_color = self._lighten_color(algorithm_color)
+        for row, col in visited_nodes:
+            if 0 <= row < len(self.maze) and 0 <= col < len(self.maze[0]):
+                x1 = col * self.cell_size
+                y1 = row * self.cell_size
+                x2 = x1 + self.cell_size
+                y2 = y1 + self.cell_size
+                self.canvas.create_rectangle(
+                    x1 + 2,
+                    y1 + 2,
+                    x2 - 2,
+                    y2 - 2,
+                    fill=light_color,
+                    outline=light_color,
+                )
+
+        # Draw start and goal
+        self._draw_special_cell(self.initial_state, "#22c55e", "S")
+        self._draw_special_cell(self.goal_state, "#ef4444", "G")
+        self.root.update_idletasks()
+
+    def _lighten_color(self, hex_color):
+        """Convert hex color to a lighter shade."""
+        # Remove '#' if present
+        hex_color = hex_color.lstrip("#")
+        # Convert hex to RGB
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        # Lighten by averaging with white
+        r = int(r * 0.4 + 255 * 0.6)
+        g = int(g * 0.4 + 255 * 0.6)
+        b = int(b * 0.4 + 255 * 0.6)
+        return f"#{r:02x}{g:02x}{b:02x}"
 
     def _set_paths_text(self, content):
         self.paths_text.configure(state=tk.NORMAL)
