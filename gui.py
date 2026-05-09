@@ -21,6 +21,10 @@ class MazeSolverGUI:
         self.goal_state = (5, 6)
         self.result_queue = Queue()
         self.running = False
+        # Maximum allowed rows/cols for the maze
+        self.max_dimension = 20
+        # Prevent re-entrant spinbox callbacks when programmatically changing values
+        self._suppress_spinbox_callback = False
         self.interactions_enabled = True
         self._running_snapshot = None
 
@@ -86,7 +90,7 @@ class MazeSolverGUI:
         self.rows_spinbox = tk.Spinbox(
             grid_row,
             from_=2,
-            to=20,
+            to=self.max_dimension,
             width=5,
             textvariable=self.rows_var,
             command=self._on_grid_size_change,
@@ -97,7 +101,7 @@ class MazeSolverGUI:
         self.cols_spinbox = tk.Spinbox(
             grid_row,
             from_=2,
-            to=20,
+            to=self.max_dimension,
             width=5,
             textvariable=self.cols_var,
             command=self._on_grid_size_change,
@@ -171,6 +175,16 @@ class MazeSolverGUI:
             command=self._on_state_change,
         )
         self.goal_col_spinbox.pack(side=tk.LEFT, padx=(6, 0))
+
+        # Apply button for start/goal coordinates
+        apply_coords_row = ttk.Frame(coords)
+        apply_coords_row.pack(fill=tk.X, pady=(8, 0))
+        self.apply_states_button = ttk.Button(
+            apply_coords_row,
+            text="Apply Start/Goal",
+            command=self._apply_states_from_controls,
+        )
+        self.apply_states_button.pack(side=tk.LEFT, fill=tk.X)
 
         algorithm_frame = ttk.LabelFrame(self.left_panel, text="Algorithm", padding=10)
         algorithm_frame.pack(fill=tk.X, pady=(0, 12))
@@ -289,8 +303,9 @@ class MazeSolverGUI:
     def _set_spinbox_limits(self, rows, cols):
         max_row = max(rows - 1, 0)
         max_col = max(cols - 1, 0)
-        self.rows_spinbox.configure(from_=2, to=max(2, rows * 2))
-        self.cols_spinbox.configure(from_=2, to=max(2, cols * 2))
+        # Always cap the selectable size to the configured maximum dimension
+        self.rows_spinbox.configure(from_=2, to=self.max_dimension)
+        self.cols_spinbox.configure(from_=2, to=self.max_dimension)
         self.start_row_spinbox.configure(from_=0, to=max_row)
         self.start_col_spinbox.configure(from_=0, to=max_col)
         self.goal_row_spinbox.configure(from_=0, to=max_row)
@@ -344,7 +359,9 @@ class MazeSolverGUI:
     def _on_grid_size_change(self):
         if self.running:
             return
-        self._apply_grid_size(redraw_only=False)
+        if self._suppress_spinbox_callback:
+            return
+        self._apply_grid_size(redraw_only=True)
 
     def _on_state_change(self):
         if self.running:
@@ -358,6 +375,12 @@ class MazeSolverGUI:
         start_col = self._read_int(self.start_col_var, "Start column")
         goal_row = self._read_int(self.goal_row_var, "Goal row")
         goal_col = self._read_int(self.goal_col_var, "Goal column")
+        if rows > getattr(self, "max_dimension", 20) or cols > getattr(
+            self, "max_dimension", 20
+        ):
+            raise ValueError(
+                f"Maze dimensions cannot exceed {self.max_dimension} x {self.max_dimension}."
+            )
         return rows, cols, (start_row, start_col), (goal_row, goal_col)
 
     def _build_maze_from_size(self, rows, cols):
@@ -381,6 +404,28 @@ class MazeSolverGUI:
         except ValueError as exc:
             messagebox.showerror("Invalid Maze Size", str(exc))
             return
+
+        # Enforce maximum configured dimension (spinbox arrows don't prevent typed input)
+        if rows > getattr(self, "max_dimension", 20) or cols > getattr(
+            self, "max_dimension", 20
+        ):
+            if redraw_only:
+                # Clamp silently and update the controls without showing a dialog.
+                clamped_rows = min(rows, self.max_dimension)
+                clamped_cols = min(cols, self.max_dimension)
+                try:
+                    self._suppress_spinbox_callback = True
+                    self.rows_var.set(str(clamped_rows))
+                    self.cols_var.set(str(clamped_cols))
+                finally:
+                    self._suppress_spinbox_callback = False
+                rows, cols = clamped_rows, clamped_cols
+            else:
+                messagebox.showerror(
+                    "Invalid Maze Size",
+                    f"Maze dimensions cannot exceed {self.max_dimension} x {self.max_dimension}.",
+                )
+                return
 
         try:
             self.maze = self._build_maze_from_size(rows, cols)
@@ -500,6 +545,12 @@ class MazeSolverGUI:
         rows, cols, start_state, goal_state = self._parse_controls()
         if rows < 2 or cols < 2:
             raise ValueError("Maze dimensions must be at least 2 x 2.")
+        if rows > getattr(self, "max_dimension", 20) or cols > getattr(
+            self, "max_dimension", 20
+        ):
+            raise ValueError(
+                f"Maze dimensions cannot exceed {self.max_dimension} x {self.max_dimension}."
+            )
 
         if rows != len(self.maze) or cols != len(self.maze[0]):
             maze = self._build_maze_from_size(rows, cols)
@@ -535,6 +586,11 @@ class MazeSolverGUI:
             self.apply_size_button.configure(state=tk.NORMAL)
             self.default_button.configure(state=tk.NORMAL)
             self.clear_button.configure(state=tk.NORMAL)
+            # Enable start/goal apply button
+            try:
+                self.apply_states_button.configure(state=tk.NORMAL)
+            except AttributeError:
+                pass
             self.interactions_enabled = True
         else:
             self.algorithm_combo.configure(state=tk.DISABLED)
@@ -542,6 +598,11 @@ class MazeSolverGUI:
             self.apply_size_button.configure(state=tk.DISABLED)
             self.default_button.configure(state=tk.DISABLED)
             self.clear_button.configure(state=tk.DISABLED)
+            # Disable start/goal apply button
+            try:
+                self.apply_states_button.configure(state=tk.DISABLED)
+            except AttributeError:
+                pass
             self.interactions_enabled = False
 
     def start_search(self):
