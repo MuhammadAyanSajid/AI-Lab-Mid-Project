@@ -579,15 +579,36 @@ class MazeSolverGUI:
 
         legend = ttk.LabelFrame(self.left_panel, text="Legend", padding=10)
         legend.pack(fill=tk.X)
-        self._add_legend_row(legend, "Wall", "#111827")
-        self._add_legend_row(legend, "Open Cell", "#ffffff")
-        self._add_legend_row(legend, "Start", "#22c55e")
-        self._add_legend_row(legend, "Goal", "#ef4444")
-        self._add_legend_row(legend, "Player", "#2563eb")
-        self._add_legend_row(legend, "Hint (next move)", "#eab308")
-        self._add_legend_row(legend, "AI full path", "#0ea5e9")
+
+        # Create two columns for legend items to fit all items on screen
+        legend_col1 = ttk.Frame(legend)
+        legend_col1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+
+        legend_col2 = ttk.Frame(legend)
+        legend_col2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # First column: basic cells and features
+        legend_items_col1 = [
+            ("Wall", "#111827"),
+            ("Open Cell", "#ffffff"),
+            ("Start", "#22c55e"),
+            ("Goal", "#ef4444"),
+            ("Player", "#2563eb"),
+        ]
+        for label, color in legend_items_col1:
+            self._add_legend_row(legend_col1, label, color)
+
+        # Second column: hints, AI path, and algorithms
+        legend_items_col2 = [
+            ("Hint (next move)", "#eab308"),
+            ("AI full path", "#0ea5e9"),
+        ]
+        for label, color in legend_items_col2:
+            self._add_legend_row(legend_col2, label, color)
+
+        # Add algorithm colors to second column
         for algorithm, color in self.algorithm_colors.items():
-            self._add_legend_row(legend, algorithm, color)
+            self._add_legend_row(legend_col2, algorithm, color)
 
         canvas_frame = ttk.LabelFrame(
             self.right_panel, text="Maze Visualization", padding=10
