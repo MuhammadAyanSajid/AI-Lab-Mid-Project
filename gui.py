@@ -23,6 +23,9 @@ class MazeSolverGUI:
         self.goal_state = (5, 6)
         self.result_queue = Queue()
         self.running = False
+        # Run token for cancellation safety: prevents stale worker updates after stop
+        self.run_token = 0
+        self.active_run_token = None
         # Maximum allowed rows/cols for the maze
         self.max_dimension = 20
         # Prevent re-entrant spinbox callbacks when programmatically changing values
@@ -545,6 +548,14 @@ class MazeSolverGUI:
             algorithm_frame, text="Run Selected Search", command=self.start_search
         )
         self.run_button.pack(fill=tk.X, pady=(8, 0))
+
+        self.stop_button = ttk.Button(
+            algorithm_frame,
+            text="Stop Search",
+            command=self.stop_search,
+            state=tk.DISABLED,
+        )
+        self.stop_button.pack(fill=tk.X, pady=(4, 0))
 
         self.status_var = tk.StringVar(value="Ready")
         status_row = ttk.Frame(self.left_panel)
@@ -1088,6 +1099,7 @@ class MazeSolverGUI:
         if enabled:
             self.algorithm_combo.configure(state="readonly")
             self.run_button.configure(state=tk.NORMAL)
+            self.stop_button.configure(state=tk.DISABLED)
             self.apply_size_button.configure(state=tk.NORMAL)
             self.default_button.configure(state=tk.NORMAL)
             self.clear_button.configure(state=tk.NORMAL)
@@ -1102,6 +1114,7 @@ class MazeSolverGUI:
         else:
             self.algorithm_combo.configure(state=tk.DISABLED)
             self.run_button.configure(state=tk.DISABLED)
+            self.stop_button.configure(state=tk.NORMAL)
             self.apply_size_button.configure(state=tk.DISABLED)
             self.default_button.configure(state=tk.DISABLED)
             self.clear_button.configure(state=tk.DISABLED)
@@ -1113,6 +1126,34 @@ class MazeSolverGUI:
             except AttributeError:
                 pass
             self.interactions_enabled = False
+
+    def _drain_queue(self, queue_obj):
+        """Remove all pending items from a queue without processing."""
+        while True:
+            try:
+                queue_obj.get_nowait()
+            except Empty:
+                break
+
+    def stop_search(self):
+        """Cancel the running search and restore UI to idle state."""
+        if not self.running:
+            return
+
+        # Invalidate current run token so stale worker messages are ignored
+        self.run_token += 1
+        self.active_run_token = None
+        self.running = False
+        self.animation_running = False
+
+        # Drain pending queue items to prevent stale updates
+        self._drain_queue(self.animation_queue)
+        self._drain_queue(self.result_queue)
+
+        # Update UI: restore controls and show stopped status
+        self._set_controls_enabled(True)
+        self.status_var.set("Stopped")
+        # Keep current explored nodes visible (do not redraw)
 
     def start_search(self):
         if self.running:
@@ -1144,6 +1185,10 @@ class MazeSolverGUI:
         self.hint_state = None
         self._running_snapshot = (maze_snapshot, start_state, goal_state)
 
+        # Increment token for this run
+        self.run_token += 1
+        self.active_run_token = self.run_token
+
         self.running = True
         self.animation_running = step_delay > 0  # Slow-motion if delay > 0
         self.status_var.set("Running search...")
@@ -1154,14 +1199,27 @@ class MazeSolverGUI:
 
         worker = threading.Thread(
             target=self._run_solver_worker,
-            args=(maze_snapshot, start_state, goal_state, selection, step_delay),
+            args=(
+                maze_snapshot,
+                start_state,
+                goal_state,
+                selection,
+                step_delay,
+                self.active_run_token,
+            ),
             daemon=True,
         )
         worker.start()
         self.root.after(80, self.check_result_queue)
 
     def _run_solver_worker(
-        self, maze_snapshot, start_state, goal_state, selection, step_delay=0
+        self,
+        maze_snapshot,
+        start_state,
+        goal_state,
+        selection,
+        step_delay=0,
+        run_token=None,
     ):
         try:
             solver = MazeSolver(maze_snapshot, start_state, goal_state)
@@ -1185,7 +1243,8 @@ class MazeSolverGUI:
                     }
 
                     for step_output in step_generator:
-                        if not self.running:  # User cancelled
+                        # Check if run was cancelled
+                        if run_token != self.active_run_token:
                             return
 
                         if step_output[0] == "step":
@@ -1196,7 +1255,10 @@ class MazeSolverGUI:
                             )
                             result_data["visited_nodes"] = visited_nodes
                             result_data["nodes_explored"] = len(visited_nodes)
-                            self.animation_queue.put(("step", result_data.copy()))
+                            # Include token in animation message
+                            self.animation_queue.put(
+                                ("step", result_data.copy(), run_token)
+                            )
                             time.sleep(step_delay / 1000.0)  # Convert ms to seconds
                         elif step_output[0] == "found":
                             # Final result: (type, path, nodes_explored)
@@ -1206,7 +1268,8 @@ class MazeSolverGUI:
                             result_data["path_cost"] = len(path) - 1 if path else 0
                             result_data["nodes_explored"] = nodes_explored
                             result_data["time"] = elapsed_time
-                            self.result_queue.put(("success", [result_data]))
+                            # Include token in result message
+                            self.result_queue.put(("success", [result_data], run_token))
                             return
                         elif step_output[0] == "not_found":
                             elapsed_time = time.time() - start_time
@@ -1214,7 +1277,8 @@ class MazeSolverGUI:
                             result_data["path_cost"] = 0
                             result_data["nodes_explored"] = step_output[2]
                             result_data["time"] = elapsed_time
-                            self.result_queue.put(("success", [result_data]))
+                            # Include token in result message
+                            self.result_queue.put(("success", [result_data], run_token))
                             return
                 else:
                     # Fallback: use regular method if step method doesn't exist
@@ -1223,7 +1287,7 @@ class MazeSolverGUI:
                     else:
                         method_name = self.algorithm_methods[selection]
                         results = [getattr(solver, method_name)()]
-                    self.result_queue.put(("success", results))
+                    self.result_queue.put(("success", results, run_token))
             else:
                 # Normal mode: instant execution
                 if selection == "All Algorithms":
@@ -1231,15 +1295,21 @@ class MazeSolverGUI:
                 else:
                     method_name = self.algorithm_methods[selection]
                     results = [getattr(solver, method_name)()]
-                self.result_queue.put(("success", results))
+                self.result_queue.put(("success", results, run_token))
         except Exception as exc:  # pragma: no cover - UI safety net
-            self.result_queue.put(("error", str(exc)))
+            self.result_queue.put(("error", str(exc), run_token))
 
     def check_result_queue(self):
         # First, check for animation steps (real-time rendering during slow-motion)
         if self.animation_running:
             try:
-                step_status, step_data = self.animation_queue.get_nowait()
+                step_status, step_data, token = self.animation_queue.get_nowait()
+                # Ignore stale messages from cancelled runs
+                if token != self.active_run_token:
+                    if self.running:
+                        self.root.after(10, self.check_result_queue)
+                    return
+
                 if step_status == "step":
                     # Draw explored nodes in real-time
                     visited_nodes = step_data.get("visited_nodes", set())
@@ -1254,8 +1324,14 @@ class MazeSolverGUI:
 
         # Check for final results
         try:
-            status, payload = self.result_queue.get_nowait()
+            status, payload, token = self.result_queue.get_nowait()
         except Empty:
+            if self.running:
+                self.root.after(80, self.check_result_queue)
+            return
+
+        # Ignore stale results from cancelled runs
+        if token != self.active_run_token:
             if self.running:
                 self.root.after(80, self.check_result_queue)
             return
