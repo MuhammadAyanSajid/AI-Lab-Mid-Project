@@ -1,3 +1,4 @@
+import random
 import threading
 from queue import Empty, Queue
 import time
@@ -12,13 +13,13 @@ class MazeSolverGUI:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Maze Solver - Interactive AI Search")
+        self.root.title("Maze Quest - Interactive AI Search")
         self.root.geometry("1280x860")
         self.root.minsize(1140, 780)
 
         self.default_maze = self._clone_grid(get_default_maze())
         self.maze = self._clone_grid(self.default_maze)
-        self.initial_state = (0, 0)
+        self.initial_state = (1, 1)
         self.goal_state = (5, 6)
         self.result_queue = Queue()
         self.running = False
@@ -32,6 +33,16 @@ class MazeSolverGUI:
         self.step_delay_ms = 100
         self.animation_running = False
         self.animation_queue = Queue()
+        self.player_state = self.initial_state
+        self.hints_used = 0
+        self.max_hints = 3
+        self.hint_state = None
+        self.ai_preview_enabled = tk.BooleanVar(value=False)
+        self.ai_preview_path = []
+        self.ai_visited_nodes = set()
+        self.ai_preview_algorithm = "A*"
+        self.ai_animation_token = 0
+        self.ai_animation_delay_ms = 35
 
         self.algorithm_colors = {
             "BFS": "#2563eb",
@@ -52,12 +63,295 @@ class MazeSolverGUI:
             "A*": "run_a_star",
         }
 
+        self._startup_cancelled = False
+        self._show_startup_dialog()
+        if self._startup_cancelled:
+            self.root.after(0, self.root.destroy)
+            return
+
         self._build_layout()
         self._sync_controls_with_maze()
+        self._reset_play_state(reset_hints=True)
         self.draw_maze()
+        self.canvas.focus_set()
+
+        self.root.bind("<Up>", self._on_arrow_key)
+        self.root.bind("<Down>", self._on_arrow_key)
+        self.root.bind("<Left>", self._on_arrow_key)
+        self.root.bind("<Right>", self._on_arrow_key)
 
     def _clone_grid(self, grid):
         return [row[:] for row in grid]
+
+    def _show_startup_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Start Maze Quest")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        mode_var = tk.StringVar(value="default")
+        rows_var = tk.StringVar(value="10")
+        cols_var = tk.StringVar(value="10")
+        selection = {"confirmed": False}
+
+        container = ttk.Frame(dialog, padding=14)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            container,
+            text="Choose maze setup",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w")
+
+        ttk.Radiobutton(
+            container,
+            text="Default maze (prebuilt walls)",
+            variable=mode_var,
+            value="default",
+        ).pack(anchor="w", pady=(8, 0))
+
+        ttk.Radiobutton(
+            container,
+            text="Custom grid (empty editable maze)",
+            variable=mode_var,
+            value="custom",
+        ).pack(anchor="w", pady=(6, 0))
+
+        size_row = ttk.Frame(container)
+        size_row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(size_row, text="Rows").pack(side=tk.LEFT)
+        row_spin = tk.Spinbox(
+            size_row,
+            from_=2,
+            to=self.max_dimension,
+            width=5,
+            textvariable=rows_var,
+        )
+        row_spin.pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Label(size_row, text="Columns").pack(side=tk.LEFT)
+        col_spin = tk.Spinbox(
+            size_row,
+            from_=2,
+            to=self.max_dimension,
+            width=5,
+            textvariable=cols_var,
+        )
+        col_spin.pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Label(
+            container,
+            text="Tip: custom grid starts empty; click cells to place/remove walls.",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(8, 0))
+
+        def on_start():
+            mode = mode_var.get().strip()
+            if mode == "default":
+                try:
+                    rows = int(rows_var.get())
+                    cols = int(cols_var.get())
+                except (TypeError, ValueError):
+                    messagebox.showerror(
+                        "Invalid size", "Rows and columns must be integers."
+                    )
+                    return
+
+                if rows < 2 or cols < 2:
+                    messagebox.showerror("Invalid size", "Maze must be at least 2 x 2.")
+                    return
+
+                if rows > self.max_dimension or cols > self.max_dimension:
+                    messagebox.showerror(
+                        "Invalid size",
+                        f"Maze dimensions cannot exceed {self.max_dimension} x {self.max_dimension}.",
+                    )
+                    return
+
+                self._set_random_default_maze(rows, cols)
+                selection["confirmed"] = True
+                dialog.destroy()
+                return
+
+            try:
+                rows = int(rows_var.get())
+                cols = int(cols_var.get())
+            except (TypeError, ValueError):
+                messagebox.showerror(
+                    "Invalid size", "Rows and columns must be integers."
+                )
+                return
+
+            if rows < 2 or cols < 2:
+                messagebox.showerror("Invalid size", "Maze must be at least 2 x 2.")
+                return
+
+            if rows > self.max_dimension or cols > self.max_dimension:
+                messagebox.showerror(
+                    "Invalid size",
+                    f"Maze dimensions cannot exceed {self.max_dimension} x {self.max_dimension}.",
+                )
+                return
+
+            self.maze = [[0 for _ in range(cols)] for _ in range(rows)]
+            self.initial_state = (1, 1)
+            self.goal_state = (rows - 1, cols - 1)
+            self._ensure_special_cells_open(
+                self.maze, self.initial_state, self.goal_state
+            )
+            selection["confirmed"] = True
+            dialog.destroy()
+
+        def on_cancel():
+            self._startup_cancelled = True
+            dialog.destroy()
+
+        button_row = ttk.Frame(container)
+        button_row.pack(fill=tk.X, pady=(12, 0))
+        ttk.Button(button_row, text="Start", command=on_start).pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
+        ttk.Button(button_row, text="Cancel", command=on_cancel).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0)
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        self.root.wait_window(dialog)
+
+        if not selection["confirmed"] and not self._startup_cancelled:
+            self.maze = self._clone_grid(self.default_maze)
+            self.initial_state = (1, 1)
+            self.goal_state = (len(self.maze) - 1, len(self.maze[0]) - 1)
+
+    def _reset_play_state(self, reset_hints=False):
+        self.player_state = self.initial_state
+        self.hint_state = None
+        if reset_hints:
+            self.hints_used = 0
+        self._update_hint_controls()
+        self._start_ai_preview_animation()
+
+    def _update_hint_controls(self):
+        if not hasattr(self, "hint_button"):
+            return
+        self.hint_button.configure(
+            text=f"Hint: Next Move ({self.hints_used}/{self.max_hints})"
+        )
+        hints_left = max(self.max_hints - self.hints_used, 0)
+        self.hint_status_var.set(f"Hints left: {hints_left}")
+
+    def _selected_ai_algorithm(self):
+        selected = self.algorithm_var.get().strip()
+        if selected in self.algorithm_methods:
+            return selected
+        return "A*"
+
+    def _set_random_default_maze(self, rows, cols):
+        maze = self._generate_default_maze(rows, cols)
+        self.maze = maze
+        self.initial_state = (1, 1)
+        self.goal_state = (rows - 1, cols - 1)
+        self._ensure_special_cells_open(self.maze, self.initial_state, self.goal_state)
+
+    def _generate_default_maze(self, rows, cols):
+        start_state = (1, 1)
+        goal_state = (rows - 1, cols - 1)
+
+        for _ in range(120):
+            wall_probability = random.uniform(0.35, 0.45)
+            maze = [
+                [1 if random.random() < wall_probability else 0 for _ in range(cols)]
+                for _ in range(rows)
+            ]
+
+            # Carve a guaranteed corridor with slight randomness.
+            row, col = start_state
+            maze[row][col] = 0
+            while (row, col) != goal_state:
+                row_step = 0
+                col_step = 0
+                if row < goal_state[0]:
+                    row_step = 1
+                elif row > goal_state[0]:
+                    row_step = -1
+                if col < goal_state[1]:
+                    col_step = 1
+                elif col > goal_state[1]:
+                    col_step = -1
+
+                options = []
+                if row_step != 0:
+                    options.append((row + row_step, col))
+                if col_step != 0:
+                    options.append((row, col + col_step))
+                if not options:
+                    break
+
+                next_row, next_col = random.choice(options)
+                row, col = next_row, next_col
+                maze[row][col] = 0
+
+            # Open a few more random cells to avoid single narrow corridors.
+            for _ in range(max(rows * cols // 8, 1)):
+                open_row = random.randrange(rows)
+                open_col = random.randrange(cols)
+                maze[open_row][open_col] = 0
+
+            maze[start_state[0]][start_state[1]] = 0
+            maze[goal_state[0]][goal_state[1]] = 0
+
+            solver = MazeSolver(maze, start_state, goal_state)
+            if solver.get_solution_path_from(start_state):
+                return maze
+
+        fallback_maze = [[0 for _ in range(cols)] for _ in range(rows)]
+        return fallback_maze
+
+    def _cancel_ai_animation(self, clear_preview=False):
+        self.ai_animation_token += 1
+        self.ai_visited_nodes = set()
+        if clear_preview:
+            self.ai_preview_path = []
+
+    def _start_ai_preview_animation(self):
+        self._cancel_ai_animation(clear_preview=True)
+        if not self.ai_preview_enabled.get() or self.running or not self.maze:
+            self.draw_maze()
+            return
+
+        self.ai_preview_algorithm = self._selected_ai_algorithm()
+        solver = MazeSolver(self.maze, self.player_state, self.goal_state)
+        step_method = self.algorithm_methods[self.ai_preview_algorithm] + "_steps"
+        generator = getattr(solver, step_method)()
+        token = self.ai_animation_token
+        self._animate_ai_preview(generator, token)
+
+    def _animate_ai_preview(self, generator, token):
+        if token != self.ai_animation_token:
+            return
+
+        try:
+            step_output = next(generator)
+        except StopIteration:
+            return
+
+        step_type = step_output[0]
+        if step_type == "step":
+            self.ai_visited_nodes = step_output[2]
+            self.draw_maze()
+            self.root.after(
+                self.ai_animation_delay_ms,
+                lambda: self._animate_ai_preview(generator, token),
+            )
+            return
+
+        if step_type == "found":
+            self.ai_preview_path = step_output[1]
+            self.draw_maze()
+            return
+
+        self.ai_preview_path = []
+        self.draw_maze()
 
     def _build_layout(self):
         self.main_frame = ttk.Frame(self.root, padding=12)
@@ -76,12 +370,12 @@ class MazeSolverGUI:
         title_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(
             title_frame,
-            text="Maze Search Visualizer",
+            text="Maze Quest",
             font=("Segoe UI", 18, "bold"),
         ).pack(anchor="w")
         ttk.Label(
             title_frame,
-            text="Edit the maze, pick one algorithm, or compare all four.",
+            text="Play with arrow keys, use limited hints, or compare AI search algorithms.",
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(2, 0))
 
@@ -127,6 +421,33 @@ class MazeSolverGUI:
             controls, text="Clear Maze", command=self._clear_maze
         )
         self.clear_button.pack(fill=tk.X, pady=(8, 0))
+
+        play_frame = ttk.LabelFrame(self.left_panel, text="Play", padding=10)
+        play_frame.pack(fill=tk.X, pady=(0, 12))
+
+        self.hint_button = ttk.Button(
+            play_frame, text="Hint: Next Move (0/3)", command=self._use_hint
+        )
+        self.hint_button.pack(fill=tk.X)
+
+        self.hint_status_var = tk.StringVar(value="Hints left: 3")
+        ttk.Label(play_frame, textvariable=self.hint_status_var).pack(
+            anchor="w", pady=(6, 0)
+        )
+
+        self.ai_preview_button = ttk.Checkbutton(
+            play_frame,
+            text="Enable artificial intelligence",
+            variable=self.ai_preview_enabled,
+            command=self._on_ai_preview_toggle,
+        )
+        self.ai_preview_button.pack(anchor="w", pady=(8, 0))
+
+        ttk.Label(
+            play_frame,
+            text="Move player with arrow keys after clicking the maze.",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(6, 0))
 
         coords = ttk.LabelFrame(self.left_panel, text="Start / Goal", padding=10)
         coords.pack(fill=tk.X, pady=(0, 12))
@@ -201,6 +522,7 @@ class MazeSolverGUI:
             state="readonly",
         )
         self.algorithm_combo.pack(fill=tk.X)
+        self.algorithm_combo.bind("<<ComboboxSelected>>", self._on_algorithm_changed)
 
         # Speed control for slow-motion visualization
         speed_row = ttk.Frame(algorithm_frame)
@@ -237,6 +559,9 @@ class MazeSolverGUI:
         ttk.Label(info, text="Click any non-special cell to toggle wall/open.").pack(
             anchor="w"
         )
+        ttk.Label(info, text="Use arrow keys to move the player marker P.").pack(
+            anchor="w", pady=(4, 0)
+        )
         ttk.Label(info, text="Start and goal cells stay open automatically.").pack(
             anchor="w", pady=(4, 0)
         )
@@ -247,6 +572,9 @@ class MazeSolverGUI:
         self._add_legend_row(legend, "Open Cell", "#ffffff")
         self._add_legend_row(legend, "Start", "#22c55e")
         self._add_legend_row(legend, "Goal", "#ef4444")
+        self._add_legend_row(legend, "Player", "#2563eb")
+        self._add_legend_row(legend, "Hint (next move)", "#eab308")
+        self._add_legend_row(legend, "AI full path", "#0ea5e9")
         for algorithm, color in self.algorithm_colors.items():
             self._add_legend_row(legend, algorithm, color)
 
@@ -261,9 +589,14 @@ class MazeSolverGUI:
             height=1,
             bg="#f8fafc",
             highlightthickness=0,
+            takefocus=1,
         )
         self.canvas.pack(anchor="nw")
         self.canvas.bind("<Button-1>", self._on_canvas_click)
+        self.canvas.bind("<Up>", self._on_arrow_key)
+        self.canvas.bind("<Down>", self._on_arrow_key)
+        self.canvas.bind("<Left>", self._on_arrow_key)
+        self.canvas.bind("<Right>", self._on_arrow_key)
 
         results_frame = ttk.LabelFrame(
             self.right_panel, text="Algorithm Comparison", padding=10
@@ -321,6 +654,9 @@ class MazeSolverGUI:
         self.goal_col_var.set(str(goal_col))
 
         self._ensure_special_cells_open(self.maze, self.initial_state, self.goal_state)
+        self.player_state = self._clamp_state(
+            getattr(self, "player_state", self.initial_state)
+        )
 
     def _set_spinbox_limits(self, rows, cols):
         max_row = max(rows - 1, 0)
@@ -366,6 +702,7 @@ class MazeSolverGUI:
 
     def _refresh_after_maze_change(self):
         self._update_canvas_size()
+        self._reset_play_state(reset_hints=True)
         self.draw_maze()
         self._set_paths_text("Maze updated. Run a search to refresh the results.\n")
         self.tree.delete(*self.tree.get_children())
@@ -409,12 +746,8 @@ class MazeSolverGUI:
         if rows < 2 or cols < 2:
             raise ValueError("Maze dimensions must be at least 2 x 2.")
 
-        previous = self._clone_grid(self.maze)
-        new_maze = [[0 for _ in range(cols)] for _ in range(rows)]
-        for row in range(min(rows, len(previous))):
-            for col in range(min(cols, len(previous[0]))):
-                new_maze[row][col] = previous[row][col]
-        return new_maze
+        maze = self._generate_default_maze(rows, cols)
+        return maze
 
     def _apply_grid_size(self, redraw_only=True):
         if self.running:
@@ -450,13 +783,15 @@ class MazeSolverGUI:
                 return
 
         try:
-            self.maze = self._build_maze_from_size(rows, cols)
+            maze = self._build_maze_from_size(rows, cols)
         except ValueError as exc:
             messagebox.showerror("Invalid Maze Size", str(exc))
             return
 
-        self.initial_state = self._clamp_state(self.initial_state)
-        self.goal_state = self._clamp_state(self.goal_state)
+        self.maze = maze
+        self.initial_state = (1, 1)
+        self.goal_state = (rows - 1, cols - 1)
+        self._ensure_special_cells_open(self.maze, self.initial_state, self.goal_state)
         self._sync_controls_with_maze()
         if redraw_only:
             self._refresh_after_maze_change()
@@ -479,6 +814,7 @@ class MazeSolverGUI:
         self.initial_state = start_state
         self.goal_state = goal_state
         self._ensure_special_cells_open(self.maze, self.initial_state, self.goal_state)
+        self._reset_play_state(reset_hints=True)
         self.draw_maze()
         self._clear_result_display()
 
@@ -486,9 +822,9 @@ class MazeSolverGUI:
         if self.running:
             return
 
-        self.maze = self._clone_grid(self.default_maze)
-        self.initial_state = (0, 0)
-        self.goal_state = (5, 6)
+        rows = self._read_int(self.rows_var, "Rows")
+        cols = self._read_int(self.cols_var, "Columns")
+        self._set_random_default_maze(rows, cols)
         self._sync_controls_with_maze()
         self._refresh_after_maze_change()
 
@@ -506,6 +842,8 @@ class MazeSolverGUI:
         if not self.interactions_enabled or not self.maze:
             return
 
+        self.canvas.focus_set()
+
         row = event.y // self.cell_size
         col = event.x // self.cell_size
         if row < 0 or col < 0 or row >= len(self.maze) or col >= len(self.maze[0]):
@@ -515,8 +853,112 @@ class MazeSolverGUI:
             return
 
         self.maze[row][col] = 0 if self.maze[row][col] == 1 else 1
+        if self.player_state == (row, col) and self.maze[row][col] == 1:
+            self.player_state = self.initial_state
+        self._reset_play_state(reset_hints=False)
         self.draw_maze()
         self._clear_result_display()
+
+    def _on_arrow_key(self, event):
+        if self.running or not self.maze:
+            return
+
+        key_to_delta = {
+            "Up": (-1, 0),
+            "Down": (1, 0),
+            "Left": (0, -1),
+            "Right": (0, 1),
+        }
+        move = key_to_delta.get(event.keysym)
+        if move is None:
+            return
+
+        self._move_player(move[0], move[1])
+
+    def _move_player(self, delta_row, delta_col):
+        next_state = (
+            self.player_state[0] + delta_row,
+            self.player_state[1] + delta_col,
+        )
+
+        if not (
+            0 <= next_state[0] < len(self.maze)
+            and 0 <= next_state[1] < len(self.maze[0])
+        ):
+            self.status_var.set("Blocked: edge of maze")
+            return
+
+        if self.maze[next_state[0]][next_state[1]] == 1:
+            self.status_var.set("Blocked: wall")
+            return
+
+        self.player_state = next_state
+        self.hint_state = None
+        self._start_ai_preview_animation()
+        self.draw_maze()
+
+        if self.player_state == self.goal_state:
+            self.status_var.set("Goal reached!")
+            messagebox.showinfo(
+                "Maze Quest",
+                "You reached the goal. Returning to the start position.",
+            )
+            self.player_state = self.initial_state
+            self.hint_state = None
+            self._start_ai_preview_animation()
+            self.draw_maze()
+            self.status_var.set("Goal reached. Player reset to start")
+        else:
+            self.status_var.set(f"Moved to {self.player_state}")
+
+    def _use_hint(self):
+        if self.running:
+            return
+
+        if self.hints_used >= self.max_hints:
+            self.status_var.set("You have used all the free hints")
+            print("You have used all the free hints")
+            self._update_hint_controls()
+            return
+
+        solver = MazeSolver(self.maze, self.initial_state, self.goal_state)
+        next_step = solver.get_next_hint_step(self.player_state)
+        if next_step is None:
+            self.status_var.set("No hint available from current position")
+            self.hint_state = None
+            self.draw_maze()
+            return
+
+        self.hints_used += 1
+        self.hint_state = next_step
+        self._update_hint_controls()
+        self.draw_maze()
+        self.status_var.set(f"Hint: next move is {next_step}")
+
+        if self.hints_used >= self.max_hints:
+            self.status_var.set("Hint used. You have used all your hints")
+
+    def _on_ai_preview_toggle(self):
+        self._start_ai_preview_animation()
+        self.draw_maze()
+        if self.ai_preview_enabled.get():
+            if self.ai_preview_path:
+                self.status_var.set("Artificial intelligence enabled: path shown")
+            else:
+                self.status_var.set("Artificial intelligence enabled: finding path...")
+        else:
+            self._cancel_ai_animation(clear_preview=True)
+            self.draw_maze()
+            self.status_var.set("Artificial intelligence disabled")
+
+    def _on_algorithm_changed(self, _event=None):
+        if self.running:
+            return
+        if self.ai_preview_enabled.get():
+            self._start_ai_preview_animation()
+            self.status_var.set(
+                f"Artificial intelligence: animating {self._selected_ai_algorithm()}"
+            )
 
     def draw_maze(self):
         self.canvas.delete("all")
@@ -538,8 +980,33 @@ class MazeSolverGUI:
                     outline="#cbd5e1",
                 )
 
+        if self.ai_visited_nodes:
+            shade = self._lighten_color(
+                self.algorithm_colors.get(self.ai_preview_algorithm, "#0ea5e9")
+            )
+            for row, col in self.ai_visited_nodes:
+                x1 = col * self.cell_size
+                y1 = row * self.cell_size
+                x2 = x1 + self.cell_size
+                y2 = y1 + self.cell_size
+                self.canvas.create_rectangle(
+                    x1 + 3,
+                    y1 + 3,
+                    x2 - 3,
+                    y2 - 3,
+                    fill=shade,
+                    outline=shade,
+                )
+
+        if len(self.ai_preview_path) >= 2:
+            self._draw_path(self.ai_preview_path, "#0ea5e9", 3)
+
+        if self.hint_state is not None:
+            self._draw_hint_cell(self.hint_state)
+
         self._draw_special_cell(self.initial_state, "#22c55e", "S")
         self._draw_special_cell(self.goal_state, "#ef4444", "G")
+        self._draw_special_cell(self.player_state, "#2563eb", "P")
 
     def _draw_special_cell(self, state, color, label):
         row, col = state
@@ -561,6 +1028,21 @@ class MazeSolverGUI:
             text=label,
             fill="white",
             font=("Segoe UI", 12, "bold"),
+        )
+
+    def _draw_hint_cell(self, state):
+        row, col = state
+        x1 = col * self.cell_size
+        y1 = row * self.cell_size
+        x2 = x1 + self.cell_size
+        y2 = y1 + self.cell_size
+        self.canvas.create_rectangle(
+            x1 + 4,
+            y1 + 4,
+            x2 - 4,
+            y2 - 4,
+            outline="#eab308",
+            width=3,
         )
 
     def _build_snapshot(self):
@@ -609,18 +1091,22 @@ class MazeSolverGUI:
             self.apply_size_button.configure(state=tk.NORMAL)
             self.default_button.configure(state=tk.NORMAL)
             self.clear_button.configure(state=tk.NORMAL)
+            self.ai_preview_button.configure(state=tk.NORMAL)
             # Enable start/goal apply button
             try:
                 self.apply_states_button.configure(state=tk.NORMAL)
             except AttributeError:
                 pass
             self.interactions_enabled = True
+            self._update_hint_controls()
         else:
             self.algorithm_combo.configure(state=tk.DISABLED)
             self.run_button.configure(state=tk.DISABLED)
             self.apply_size_button.configure(state=tk.DISABLED)
             self.default_button.configure(state=tk.DISABLED)
             self.clear_button.configure(state=tk.DISABLED)
+            self.hint_button.configure(state=tk.DISABLED)
+            self.ai_preview_button.configure(state=tk.DISABLED)
             # Disable start/goal apply button
             try:
                 self.apply_states_button.configure(state=tk.DISABLED)
@@ -647,6 +1133,15 @@ class MazeSolverGUI:
         self.maze = self._clone_grid(maze_snapshot)
         self.initial_state = start_state
         self.goal_state = goal_state
+        self._cancel_ai_animation(clear_preview=True)
+        if not (
+            0 <= self.player_state[0] < len(self.maze)
+            and 0 <= self.player_state[1] < len(self.maze[0])
+        ):
+            self.player_state = self.initial_state
+        elif self.maze[self.player_state[0]][self.player_state[1]] == 1:
+            self.player_state = self.initial_state
+        self.hint_state = None
         self._running_snapshot = (maze_snapshot, start_state, goal_state)
 
         self.running = True
@@ -773,6 +1268,7 @@ class MazeSolverGUI:
             self.status_var.set("Error")
             messagebox.showerror("Search Error", payload)
             self._set_paths_text("Search failed. Fix the maze or try again.\n")
+            self._start_ai_preview_animation()
             self.draw_maze()
             return
 
@@ -780,6 +1276,7 @@ class MazeSolverGUI:
         self.status_var.set("Complete")
         self.populate_results(results)
         self.render_paths(results)
+        self._start_ai_preview_animation()
 
     def populate_results(self, results):
         self.tree.delete(*self.tree.get_children())
@@ -840,6 +1337,7 @@ class MazeSolverGUI:
 
         self._draw_special_cell(self.initial_state, "#22c55e", "S")
         self._draw_special_cell(self.goal_state, "#ef4444", "G")
+        self._draw_special_cell(self.player_state, "#2563eb", "P")
 
     def _draw_path(self, path, color, width):
         points = []
@@ -900,6 +1398,7 @@ class MazeSolverGUI:
         # Draw start and goal
         self._draw_special_cell(self.initial_state, "#22c55e", "S")
         self._draw_special_cell(self.goal_state, "#ef4444", "G")
+        self._draw_special_cell(self.player_state, "#2563eb", "P")
         self.root.update_idletasks()
 
     def _lighten_color(self, hex_color):

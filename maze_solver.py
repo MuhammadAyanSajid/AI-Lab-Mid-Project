@@ -246,6 +246,81 @@ class MazeSolver:
             "time": elapsed_time,
         }
 
+    def _manhattan_distance_to_goal(self, state, goal_state):
+        return abs(state[0] - goal_state[0]) + abs(state[1] - goal_state[1])
+
+    def find_path_a_star(self, start_state, goal_state=None):
+        """Find the shortest path from start_state to goal_state using A*.
+
+        Returns a list of states including both start and goal, or an empty
+        list when no valid path exists.
+        """
+        target = self.goal_state if goal_state is None else goal_state
+
+        if not self.is_valid_state(start_state) or not self.is_valid_state(target):
+            return []
+
+        if start_state == target:
+            return [start_state]
+
+        frontier = []
+        heapq.heappush(
+            frontier,
+            (
+                self._manhattan_distance_to_goal(start_state, target),
+                0,
+                start_state,
+            ),
+        )
+
+        parents = {start_state: None}
+        best_cost = {start_state: 0}
+        closed_set = set()
+
+        while frontier:
+            f_cost, g_cost, current_state = heapq.heappop(frontier)
+
+            if current_state in closed_set:
+                continue
+
+            closed_set.add(current_state)
+
+            if current_state == target:
+                path = [current_state]
+                while parents[path[-1]] is not None:
+                    path.append(parents[path[-1]])
+                path.reverse()
+                return path
+
+            for next_state in self.neighbors(current_state):
+                tentative_g_cost = g_cost + 1
+                if (
+                    next_state not in best_cost
+                    or tentative_g_cost < best_cost[next_state]
+                ):
+                    best_cost[next_state] = tentative_g_cost
+                    parents[next_state] = current_state
+                    tentative_f_cost = (
+                        tentative_g_cost
+                        + self._manhattan_distance_to_goal(next_state, target)
+                    )
+                    heapq.heappush(
+                        frontier, (tentative_f_cost, tentative_g_cost, next_state)
+                    )
+
+        return []
+
+    def get_solution_path_from(self, current_state):
+        """Return full solution path from current_state to the configured goal."""
+        return self.find_path_a_star(current_state, self.goal_state)
+
+    def get_next_hint_step(self, current_state):
+        """Return only the immediate next move from current_state, if available."""
+        path = self.get_solution_path_from(current_state)
+        if len(path) >= 2:
+            return path[1]
+        return None
+
     # Generator-based (step-by-step) versions for slow-motion visualization
     def run_bfs_steps(self):
         """Breadth-First Search yielding (current_state, visited_nodes) after each step."""
