@@ -625,10 +625,6 @@ class MazeSolverGUI:
         )
         self.canvas.pack(anchor="nw")
         self.canvas.bind("<Button-1>", self._on_canvas_click)
-        self.canvas.bind("<Up>", self._on_arrow_key)
-        self.canvas.bind("<Down>", self._on_arrow_key)
-        self.canvas.bind("<Left>", self._on_arrow_key)
-        self.canvas.bind("<Right>", self._on_arrow_key)
 
         results_frame = ttk.LabelFrame(
             self.right_panel, text="Algorithm Comparison", padding=10
