@@ -4,11 +4,7 @@ import time
 
 
 class MazeSolver:
-    """Solve a 2D grid maze using classic AI search strategies.
-
-    The maze uses 0 for open cells and 1 for blocked cells.
-    States are represented as (row, col) tuples.
-    """
+   
 
     def __init__(self, grid, initial_state, goal_state):
         self.grid = grid
@@ -57,7 +53,6 @@ class MazeSolver:
         return " -> ".join(f"{state}" for state in path)
 
     def run_bfs(self):
-        """Breadth-First Search using a FIFO queue implemented with deque."""
         start_time = time.time()
         frontier = deque([self.initial_state])
         parents = {self.initial_state: None}
@@ -89,7 +84,6 @@ class MazeSolver:
         return self.no_solution_result("BFS", nodes_explored, elapsed_time)
 
     def run_dfs(self):
-        """Depth-First Search using an explicit LIFO stack."""
         start_time = time.time()
         stack = [self.initial_state]
         parents = {self.initial_state: None}
@@ -116,7 +110,6 @@ class MazeSolver:
                     "time": elapsed_time,
                 }
 
-            # Reverse neighbor order so the pop sequence remains easy to explain.
             for next_state in reversed(self.neighbors(current_state)):
                 if next_state not in visited and next_state not in stack:
                     parents[next_state] = current_state
@@ -126,7 +119,6 @@ class MazeSolver:
         return self.no_solution_result("DFS", nodes_explored, elapsed_time)
 
     def depth_limited_search(self, limit):
-        """Perform one Depth-Limited Search pass up to a given depth."""
         stack = [(self.initial_state, 0)]
         parents = {self.initial_state: None}
         visited = set()
@@ -165,7 +157,6 @@ class MazeSolver:
         }
 
     def run_ids(self):
-        """Iterative Deepening Search built from repeated DLS passes."""
         start_time = time.time()
         total_nodes_explored = 0
 
@@ -187,7 +178,6 @@ class MazeSolver:
         return self.no_solution_result("IDS", total_nodes_explored, elapsed_time)
 
     def run_a_star(self):
-        """A* Search using heapq as a priority queue and Manhattan distance."""
         start_time = time.time()
         frontier = []
         heapq.heappush(
@@ -250,11 +240,7 @@ class MazeSolver:
         return abs(state[0] - goal_state[0]) + abs(state[1] - goal_state[1])
 
     def find_path_a_star(self, start_state, goal_state=None):
-        """Find the shortest path from start_state to goal_state using A*.
-
-        Returns a list of states including both start and goal, or an empty
-        list when no valid path exists.
-        """
+       
         target = self.goal_state if goal_state is None else goal_state
 
         if not self.is_valid_state(start_state) or not self.is_valid_state(target):
@@ -311,19 +297,15 @@ class MazeSolver:
         return []
 
     def get_solution_path_from(self, current_state):
-        """Return full solution path from current_state to the configured goal."""
         return self.find_path_a_star(current_state, self.goal_state)
 
     def get_next_hint_step(self, current_state):
-        """Return only the immediate next move from current_state, if available."""
         path = self.get_solution_path_from(current_state)
         if len(path) >= 2:
             return path[1]
         return None
 
-    # Generator-based (step-by-step) versions for slow-motion visualization
     def run_bfs_steps(self):
-        """Breadth-First Search yielding (current_state, visited_nodes) after each step."""
         frontier = deque([self.initial_state])
         parents = {self.initial_state: None}
         visited = {self.initial_state}
@@ -346,7 +328,6 @@ class MazeSolver:
         yield ("not_found", [], len(visited))
 
     def run_dfs_steps(self):
-        """Depth-First Search yielding (current_state, visited_nodes) after each step."""
         stack = [self.initial_state]
         parents = {self.initial_state: None}
         visited = set()
@@ -373,7 +354,6 @@ class MazeSolver:
         yield ("not_found", [], len(visited))
 
     def run_ids_steps(self):
-        """Iterative Deepening Search with step-by-step yields."""
         total_visited = set()
         parents = {self.initial_state: None}
 
@@ -406,7 +386,6 @@ class MazeSolver:
         yield ("not_found", [], len(total_visited))
 
     def run_a_star_steps(self):
-        """A* Search yielding (current_state, visited_nodes) after each step."""
         frontier = []
         heapq.heappush(
             frontier,
@@ -448,13 +427,11 @@ class MazeSolver:
         yield ("not_found", [], len(closed_set))
 
     def run_all_algorithms(self):
-        """Execute all four search strategies on the same maze."""
         results = self.get_all_results()
         self.print_results(results)
         return results
 
     def get_all_results(self):
-        """Run all four algorithms and return their raw result records."""
         return [
             self.run_bfs(),
             self.run_dfs(),
@@ -485,7 +462,6 @@ class MazeSolver:
 
 
 def get_default_maze():
-    """Provide a reproducible maze for algorithm comparison."""
     return [
         [0, 0, 1, 0, 0, 0, 1],
         [1, 0, 1, 0, 1, 0, 1],

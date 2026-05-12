@@ -9,7 +9,6 @@ from maze_solver import MazeSolver, get_default_maze
 
 
 class MazeSolverGUI:
-    """Tkinter front end for the maze search solver."""
 
     def __init__(self, root):
         self.root = root
@@ -505,7 +504,6 @@ class MazeSolverGUI:
         )
         self.goal_col_spinbox.pack(side=tk.LEFT, padx=(6, 0))
 
-        # Apply button for start/goal coordinates
         apply_coords_row = ttk.Frame(coords)
         apply_coords_row.pack(fill=tk.X, pady=(8, 0))
         self.apply_states_button = ttk.Button(
@@ -527,7 +525,6 @@ class MazeSolverGUI:
         self.algorithm_combo.pack(fill=tk.X)
         self.algorithm_combo.bind("<<ComboboxSelected>>", self._on_algorithm_changed)
 
-        # Speed control for slow-motion visualization
         speed_row = ttk.Frame(algorithm_frame)
         speed_row.pack(fill=tk.X, pady=(8, 0))
         ttk.Label(speed_row, text="Speed (ms)").pack(side=tk.LEFT)
@@ -580,14 +577,12 @@ class MazeSolverGUI:
         legend = ttk.LabelFrame(self.left_panel, text="Legend", padding=10)
         legend.pack(fill=tk.X)
 
-        # Create two columns for legend items to fit all items on screen
         legend_col1 = ttk.Frame(legend)
         legend_col1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
 
         legend_col2 = ttk.Frame(legend)
         legend_col2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # First column: basic cells and features
         legend_items_col1 = [
             ("Wall", "#111827"),
             ("Open Cell", "#ffffff"),
@@ -598,7 +593,6 @@ class MazeSolverGUI:
         for label, color in legend_items_col1:
             self._add_legend_row(legend_col1, label, color)
 
-        # Second column: hints, AI path, and algorithms
         legend_items_col2 = [
             ("Hint (next move)", "#eab308"),
             ("AI full path", "#0ea5e9"),
@@ -606,7 +600,6 @@ class MazeSolverGUI:
         for label, color in legend_items_col2:
             self._add_legend_row(legend_col2, label, color)
 
-        # Add algorithm colors to second column
         for algorithm, color in self.algorithm_colors.items():
             self._add_legend_row(legend_col2, algorithm, color)
 
@@ -788,7 +781,6 @@ class MazeSolverGUI:
             messagebox.showerror("Invalid Maze Size", str(exc))
             return
 
-        # Enforce maximum configured dimension (spinbox arrows don't prevent typed input)
         if rows > getattr(self, "max_dimension", 20) or cols > getattr(
             self, "max_dimension", 20
         ):
@@ -1157,20 +1149,16 @@ class MazeSolverGUI:
         if not self.running:
             return
 
-        # Invalidate current run token so stale worker messages are ignored
         self.run_token += 1
         self.active_run_token = None
         self.running = False
         self.animation_running = False
 
-        # Drain pending queue items to prevent stale updates
         self._drain_queue(self.animation_queue)
         self._drain_queue(self.result_queue)
 
-        # Update UI: restore controls and show stopped status
         self._set_controls_enabled(True)
         self.status_var.set("Stopped")
-        # Keep current explored nodes visible (do not redraw)
 
     def start_search(self):
         if self.running:
@@ -1202,7 +1190,6 @@ class MazeSolverGUI:
         self.hint_state = None
         self._running_snapshot = (maze_snapshot, start_state, goal_state)
 
-        # Increment token for this run
         self.run_token += 1
         self.active_run_token = self.run_token
 
@@ -1241,7 +1228,6 @@ class MazeSolverGUI:
         try:
             solver = MazeSolver(maze_snapshot, start_state, goal_state)
 
-            # Slow-motion mode: use step-by-step generators
             if step_delay > 0 and selection != "All Algorithms":
                 method_name = self.algorithm_methods[selection]
                 step_method_name = method_name.replace("run_", "run_") + "_steps"
@@ -1298,7 +1284,6 @@ class MazeSolverGUI:
                             self.result_queue.put(("success", [result_data], run_token))
                             return
                 else:
-                    # Fallback: use regular method if step method doesn't exist
                     if selection == "All Algorithms":
                         results = solver.get_all_results()
                     else:
@@ -1306,7 +1291,6 @@ class MazeSolverGUI:
                         results = [getattr(solver, method_name)()]
                     self.result_queue.put(("success", results, run_token))
             else:
-                # Normal mode: instant execution
                 if selection == "All Algorithms":
                     results = solver.get_all_results()
                 else:
@@ -1317,7 +1301,6 @@ class MazeSolverGUI:
             self.result_queue.put(("error", str(exc), run_token))
 
     def check_result_queue(self):
-        # First, check for animation steps (real-time rendering during slow-motion)
         if self.animation_running:
             try:
                 step_status, step_data, token = self.animation_queue.get_nowait()
@@ -1328,7 +1311,6 @@ class MazeSolverGUI:
                     return
 
                 if step_status == "step":
-                    # Draw explored nodes in real-time
                     visited_nodes = step_data.get("visited_nodes", set())
                     algorithm = step_data.get("algorithm", "BFS")
                     self._draw_explored_nodes(visited_nodes, algorithm)
@@ -1339,7 +1321,6 @@ class MazeSolverGUI:
             except Empty:
                 pass
 
-        # Check for final results
         try:
             status, payload, token = self.result_queue.get_nowait()
         except Empty:
@@ -1347,7 +1328,6 @@ class MazeSolverGUI:
                 self.root.after(80, self.check_result_queue)
             return
 
-        # Ignore stale results from cancelled runs
         if token != self.active_run_token:
             if self.running:
                 self.root.after(80, self.check_result_queue)
@@ -1470,7 +1450,6 @@ class MazeSolverGUI:
                     x1, y1, x2, y2, fill=fill_color, outline="#cbd5e1"
                 )
 
-        # Draw explored nodes in light shade
         algorithm_color = self.algorithm_colors.get(algorithm, "#0f172a")
         light_color = self._lighten_color(algorithm_color)
         for row, col in visited_nodes:
@@ -1488,14 +1467,12 @@ class MazeSolverGUI:
                     outline=light_color,
                 )
 
-        # Draw start and goal
         self._draw_special_cell(self.initial_state, "#22c55e", "S")
         self._draw_special_cell(self.goal_state, "#ef4444", "G")
         self._draw_special_cell(self.player_state, "#2563eb", "P")
         self.root.update_idletasks()
 
     def _lighten_color(self, hex_color):
-        """Convert hex color to a lighter shade."""
         # Remove '#' if present
         hex_color = hex_color.lstrip("#")
         # Convert hex to RGB
